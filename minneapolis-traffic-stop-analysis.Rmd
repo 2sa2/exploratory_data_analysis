@@ -1,0 +1,184 @@
+---
+title: 'An Exploratory Data Analysis: Minneapolis Traffic Stops'
+author: "Eric Tusa"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r include=FALSE}
+library(tidyverse)
+library(ggplot2)
+# source:  https://opendata.minneapolismn.gov/datasets/cityoflakes::police-stop-data/about
+file <- "https://opendata.arcgis.com/api/v3/datasets/215b4b543d894750aef86c725b56ee2a_0/downloads/data?format=csv&spatialRefId=4326&where=1%3D1"
+if(!file.exists("Data")) {dir.create("Data")}
+if(!file.exists("Data/2023-minneapolis-traffic-stops.csv")) {download.file(file, destfile = "Data/2023-minneapolis-traffic-stops.csv", method = "curl")}
+(dateDownloaded <- date())
+```
+
+# About the Dataset
+This data set provides details regarding the nature of stops made by officers of the Minneapolis Police Department. Let's start by reading the data and getting an understanding of its format.
+```{r message=FALSE}
+stops <- read_csv("Data/2023-minneapolis-traffic-stops.csv")
+head(stops)
+length(colnames(stops))
+```
+Looks like we have a total of 19 columns. Let's go through them to understand what they represent.
+```{r}
+colnames(stops)
+```
+
+1. **OBJECTID**  
+an ID that uniquely identifies each entry
+
+2. **masterIncidentNumber**  
+a number that uniquely identifies each incident
+
+3. **responseDate**  
+the recorded date and time of the stop
+
+4. **reason**  
+the reason for the stop
+
+5. **problem**  
+the category under which the reason for the stop falls
+
+6. **callDisposition**  
+the result of the stop
+
+7. **citationIssued**  
+indicates whether or not a citation was issued
+
+8. **personSearch**  
+indicates whether or not the person of interest was searched during the stop
+
+9. **vehicleSearch**  
+indicates whether or not the vehicle was searched during the stop
+
+10. **preRace**  
+the officer's guess of the person's race prior to speaking with the person
+
+11. **race**  
+the officer's determination of the person's race after speaking with the person
+
+12. **gender**  
+the person's gender
+
+13. **lat**  
+the latitude of the location of the incident
+
+14. **long**  
+the longitude of the location of the incident
+
+15. **x**  
+x coordinate
+
+16. **y**  
+y coordinate
+
+17. **policePrecinct**  
+the precinct number of the area of the incident
+
+18. **neighborhood**  
+the name of the neighborhood of the incident
+
+19. **lastUpdateDate**
+the date and time the record was last updated  
+
+## Tidying
+Let's tidy up the data to make working with it a bit easier.
+```{r}
+# Separating date and time may be helpful further into the analysis
+stops <- stops %>% separate(responseDate, into = c('date', 'time'), sep = ' ') %>% mutate(date = parse_date(date, format = '%Y/%m/%d')) %>% mutate(time = parse_time(time, format = '%H:%M:%S+%z'))
+stops <- stops %>% separate(lastUpdateDate, into = c('lastUpdateDate', 'lastUpdateTime'), sep = ' ') %>% mutate(lastUpdateDate = parse_date(lastUpdateDate, format = '%Y/%m/%d')) %>% mutate(lastUpdateTime = parse_time(lastUpdateTime, format = '%H:%M:%S+%z'))
+
+# Let's also convert any columns with logical strings to the logical data type
+stops <- stops %>% mutate(personSearch = ifelse(personSearch == "YES", TRUE, FALSE)) %>% mutate(vehicleSearch = ifelse(vehicleSearch == "YES", TRUE, FALSE))
+```  
+
+Now that the data is tidied, let's look more into the nature of the data.  
+```{r}
+stops %>% summarize(min = min(date),
+                    max = max(date))
+```
+The data set includes details from stops dating back to October 31, 2016 up to the present day. However, I will exclude data from 2016 and 2023 since they do not include data for the entire year.  
+
+```{r}
+# Remove entries for 2016 and 2023
+stops <- stops %>% filter(date > "2016-12-31" & date < "2023-01-01")
+```
+
+
+# Analysis
+For the purposes of this analysis, I will focus on the gender of the persons involved in the stops. Let's compare the number of stops involving males, females, and gender non-conforming persons.  
+```{r}
+# This code is intended to keep colors consistent throughout all plots
+palette1 <- c('olivedrab', 'salmon', 'wheat3', 'steelblue')
+names(palette1) <- c('Male', 'Female', 'Gender Non-Conforming', 'Total')
+```
+
+```{r include=FALSE}
+stops %>% group_by(gender) %>% summarize(n = n())
+stops %>% count(gender) %>% arrange(desc(n))
+```
+
+```{r out.width="100%"}
+stops_gender_filtered <- stops %>% filter(gender == 'Male' | gender == 'Female' | gender == 'Gender Non-Conforming') %>% within(gender <- factor(gender, levels = names(sort(table(gender), decreasing = TRUE))))
+ggplot(data = stops_gender_filtered, aes(gender, fill = gender)) +
+  geom_bar() +
+  geom_text(stat = 'count', aes(label = after_stat(count)), vjust = -0.4) +
+  scale_fill_manual(values = palette1)
+```  
+For the sake of this analysis, I will exclude observations containing an entry for gender that do not contain male, female, or gender non-conforming. As we can see from the bar chart above, male drivers are stopped significantly more often than other drivers.  
+<br/>
+Let's break it down by year.
+```{r out.width="100%"}
+stops_gender_filtered_by_year <- stops %>% filter(gender == 'Male' | gender == 'Female' | gender == 'Gender Non-Conforming') %>% group_by(year = lubridate::floor_date(date, 'year'))
+ggplot(data = stops_gender_filtered_by_year, aes(x = year, fill = gender)) +
+  geom_bar(position = "dodge") +
+  scale_fill_manual(values = palette1)
+```
+I think it's safe to say that stops went down from 2020 to 2022 due to the reduced number of drivers on the roads as a result of the COVID-19 pandemic. On another note, it's somewhat difficult to discern from the above plot, but the ratio of males to females that are stopped seems to be going up over time.
+```{r}
+calc_ratio <- function(yr) {
+  stops_year <- stops_gender_filtered_by_year %>% filter(year == paste(yr, '-01-01', sep = ''))
+  stops_year %>% group_by(gender) %>% summarise(n = n()) %>% summarise(ratio = n[gender == 'Male'] / n[gender == 'Female'])
+}
+for(yr in 2017:2022) {
+  print(paste(yr, ': ', calc_ratio(yr)))
+}
+```
+Now, let's look at stops per day.
+```{r message=FALSE, out.width="100%"}
+stops_per_day <- stops %>% group_by(date) %>% mutate(number_of_stops = n()) %>% ungroup()
+
+stops_by_gender_per_day <- stops %>% group_by(gender, date) %>% mutate(number_of_stops = n()) %>% ungroup() %>% filter(gender == 'Male' | gender == 'Female' | gender == 'Gender Non-Conforming')
+
+ggplot() +
+  geom_smooth(data = stops_by_gender_per_day, aes(x = date, y = number_of_stops, color = gender)) +
+  geom_smooth(data = stops_per_day, aes(x = date, y = number_of_stops, color = 'Total')) +
+  scale_color_manual(values = palette1)
+```
+As we can see from the plot above, the number of stops per day was trending downwards from 2017 through early 2020, followed by a steep drop near the beginning of 2020 when the COVID-19 pandemic began. Then the stops per day stayed roughly constant from the beginning of 2021 through about mid 2022. Following that, it began trending upwards, presumably due to the easing of restrictions after the COVID-19 pandemic.
+
+Next, let's compare how often each gender is searched during a stop.
+```{r message=FALSE, warning=FALSE, out.width="100%"}
+stops_gender_searched <- stops_gender_filtered %>% group_by(gender, personSearch) %>% summarise(n = n())
+ggplot(data = stops_gender_searched, aes(x = personSearch, fill = gender, weight = n)) +
+  geom_bar(position = 'dodge') +
+  geom_text(stat = 'count', aes(label = after_stat(count)), position = position_dodge(0.9), vjust = 0) +
+  scale_fill_manual(values = palette1)
+stops_gender_searched %>% summarise(ratio = n[personSearch == TRUE] / (n[personSearch == FALSE] + n[personSearch == TRUE]), across()) %>% filter(personSearch == TRUE) %>% select(gender, personSearch, ratio)
+```
+Men are searched almost twice as often as females, yet are stopped about 3 times more often as females as determined by the first chart in this analysis. 
+
+# Questions for Further Analysis
+These questions could serve as a good starting point for further analysis, perhaps combining this data set with other data sets. <br/> <br/>
+1. Why is it that male drivers are stopped more often? Is it because there are more male drivers on the road? If not, what is it about males that tend to make them look more suspicious or be more reckless when driving on the roads to the point that it justifies officer intervention?  
+2. How come males are only searched twice as often as females, yet are stopped 3 times as often?  
+3. How does gender play a role in the outcome of the stop?  
